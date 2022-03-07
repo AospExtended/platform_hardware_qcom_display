@@ -233,11 +233,6 @@ DisplayError DisplayBuiltIn::Prepare(LayerStack *layer_stack) {
   // Clean hw layers for reuse.
   hw_layers_ = HWLayers();
 
-  error = ConfigureCwb(layer_stack);
-  if (error != kErrorNone) {
-    return error;
-  }
-
   UpdateQsyncMode();
 
   left_frame_roi_ = {};
@@ -328,17 +323,9 @@ DisplayError DisplayBuiltIn::setColorSamplingState(SamplingState state) {
   if (samplingState == SamplingState::On) {
     histogramCtrl.value = sde_drm::HistModes::kHistEnabled;
     histogramIRQ.value = sde_drm::HistModes::kHistEnabled;
-    if (hw_panel_info_.mode == kModeCommand) {
-      uint32_t pending;
-      ControlPartialUpdate(false /* enable */, &pending);
-    }
   } else {
     histogramCtrl.value = sde_drm::HistModes::kHistDisabled;
     histogramIRQ.value = sde_drm::HistModes::kHistDisabled;
-    if (hw_panel_info_.mode == kModeCommand) {
-      uint32_t pending;
-      ControlPartialUpdate(true /* enable */, &pending);
-    }
   }
 
   // effectively drmModeAtomicAddProperty for the SDE_DSPP_HIST_CTRL_V1
@@ -798,12 +785,19 @@ void DisplayBuiltIn::IdleTimeout() {
       lock_guard<recursive_mutex> obj(recursive_mutex_);
       comp_manager_->ProcessIdleTimeout(display_comp_ctx_);
     }
+    hw_intf_->EnableSelfRefresh();
   }
 }
 
 void DisplayBuiltIn::PingPongTimeout() {
   lock_guard<recursive_mutex> obj(recursive_mutex_);
   hw_intf_->DumpDebugData();
+}
+
+void DisplayBuiltIn::ThermalEvent(int64_t thermal_level) {
+  event_handler_->HandleEvent(kThermalEvent);
+  lock_guard<recursive_mutex> obj(recursive_mutex_);
+  comp_manager_->ProcessThermalEvent(display_comp_ctx_, thermal_level);
 }
 
 void DisplayBuiltIn::IdlePowerCollapse() {
@@ -1488,6 +1482,41 @@ DisplayError DisplayBuiltIn::GetDynamicDSIClock(uint64_t *bit_clk_rate) {
   }
 
   return hw_intf_->GetDynamicDSIClock(bit_clk_rate);
+}
+
+void DisplayBuiltIn::ResetPanel() {
+  DisplayError status = kErrorNone;
+  shared_ptr<Fence> release_fence = nullptr;
+  DisplayState last_display_state = {};
+
+  GetDisplayState(&last_display_state);
+  DLOGI("Power off display id = %d", display_id_);
+
+  status = SetDisplayState(kStateOff, true /* teardown */, &release_fence);
+  if (status != kErrorNone) {
+    DLOGE("Power off for display id = %d failed with error = %d", display_id_, status);
+  }
+
+  DLOGI("Set display %d to state = %d", display_id_, last_display_state);
+  status = SetDisplayState(last_display_state, false /* teardown */, &release_fence);
+  if (status != kErrorNone) {
+     DLOGE("%d state for display id = %d failed with error = %d", last_display_state, display_id_,
+           status);
+  }
+
+  // If panel does not support current color modes, do not set color mode.
+  if (current_color_mode_.gamut && current_color_mode_.gamma &&
+      current_color_mode_.intent != snapdragoncolor::kMaxRenderIntent) {
+    status = SetStcColorMode(current_color_mode_);
+    if (status != kErrorNone) {
+      DLOGE("SetStcColorMode failed for display id = %d error = %d", display_id_, status);
+    }
+  }
+
+  status = SetVSyncState(true);
+  if (status != kErrorNone) {
+    DLOGE("Enable vsync failed for display id = %d with error = %d", display_id_, status);
+  }
 }
 
 DisplayError DisplayBuiltIn::GetRefreshRate(uint32_t *refresh_rate) {

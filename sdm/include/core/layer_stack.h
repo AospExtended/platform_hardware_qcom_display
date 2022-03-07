@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.
+* Copyright (c) 2014-2020, The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without modification, are permitted
 * provided that the following conditions are met:
@@ -203,11 +203,6 @@ struct LayerRequestFlags {
       uint32_t src_tone_map: 1;    //!< This flag will be set by SDM when the layer needs
                                    //!< source tone map.
       uint32_t rc: 1;  //!< This flag will be set by SDM when the layer is drawn by RC HW.
-      uint32_t update_format: 1;   //!< This flag will be set by SDM when layer format is updated
-                                   //!< The buffer format is mentioned in the LayerRequest Format
-      uint32_t update_color_metadata: 1;   //!< This flag will be set by SDM when layer color
-                                           //!< metadata is updated. The color metadata is
-                                           //!< mentioned in the LayerRequest Format
     };
     uint32_t request_flags = 0;  //!< For initialization purpose only.
                                  //!< Shall not be refered directly.
@@ -223,16 +218,9 @@ struct LayerRequestFlags {
 */
 struct LayerRequest {
   LayerRequestFlags flags;  // Flags associated with this request
-  LayerBufferFormat format = kFormatRGBA8888;  // Requested format - Used with tone_map and
-                                               // update_format flags
-  ColorMetaData color_metadata = { .colorPrimaries = ColorPrimaries_BT709_5,
-                                   .range = Range_Full,
-                                   .transfer = Transfer_sRGB };
-                                  // Requested color metadata
-  uint32_t width = 0;   // Requested unaligned width.
-                        // Used with tone_map flag
+  LayerBufferFormat format = kFormatRGBA8888;  // Requested format
+  uint32_t width = 0;  // Requested unaligned width.
   uint32_t height = 0;  // Requested unalighed height
-                        // Used with tone_map flag
 };
 
 /*! @brief This structure defines flags associated with a layer stack. The 1-bit flag can be set to
@@ -273,9 +261,8 @@ struct LayerStackFlags {
                                       //!< stack contains s3d layer, and the layer stack can enter
                                       //!< s3d mode.
 
-      uint32_t post_processed_output : 1;  //!< If output_buffer should contain post processed
-                                           //!< output. This flag is set to 1 for DSPP tap point
-                                           //!< and 0 for LM tap point.
+      uint32_t post_processed_output : 1;  // If output_buffer should contain post processed output
+                                           // This applies only to primary displays currently
 
       uint32_t hdr_present : 1;  //!< Set if stack has HDR content
 
@@ -437,23 +424,6 @@ struct PrimariesTransfer {
   }
 };
 
-/*! @brief This enum represents the Tappoints for CWB that are supported by the hardware. */
-enum CwbTapPoint {
-  kLmTapPoint,      // This is set by client to use Layer Mixer output for CWB.
-  kDsppTapPoint,    // This is set by client to use DSPP output for CWB.
-};
-
-/*! @brief This structure defines the configuration variables needed to perform CWB.
-
-  @sa LayerStack
-*/
-struct CwbConfig {
-  bool pu_as_cwb_roi = false;                        //!< Whether to include the PU ROI generated
-                                                     //!< from app layers in CWB ROI.
-  LayerRect cwb_roi = {};                            //!< Client specified ROI rect for CWB.
-  LayerRect cwb_full_rect = {};                      //!< Same as Output buffer Rect (unaligned).
-  CwbTapPoint tap_point = CwbTapPoint::kLmTapPoint;  //!< Client specified tap point for CWB.
-};
 
 /*! @brief This structure defines a layer stack that contains layers which need to be composed and
   rendered onto the target.
@@ -487,9 +457,6 @@ struct LayerStack {
 
   bool block_on_fb = true;             //!< Indicates if there is a need to block
                                        //!< on GPU composed o/p.
-
-  CwbConfig *cwb_config = NULL;        //!< Struct that contains the original CWB configuration
-                                       //!< provided by CWB client.
 };
 
 }  // namespace sdm

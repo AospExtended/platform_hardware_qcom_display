@@ -1114,7 +1114,7 @@ int32_t HWCSession::SetOutputBuffer(hwc2_display_t display, buffer_handle_t buff
 }
 
 int32_t HWCSession::SetPowerMode(hwc2_display_t display, int32_t int_mode) {
-  if (display >= HWCCallbacks::kNumDisplays || !hwc_display_[display]) {
+  if (display >= HWCCallbacks::kNumDisplays) {
     return HWC2_ERROR_BAD_DISPLAY;
   }
 
@@ -1155,35 +1155,18 @@ int32_t HWCSession::SetPowerMode(hwc2_display_t display, int32_t int_mode) {
     return HWC2_ERROR_UNSUPPORTED;
   }
 
-  // async_powermode supported for power on and off
-  bool override_mode = async_powermode_ && display_ready_.test(UINT32(display)) &&
-                       async_power_mode_triggered_;
-  HWC2::PowerMode last_power_mode = hwc_display_[display]->GetCurrentPowerMode();
 
-  if (last_power_mode == mode) {
-    return HWC2_ERROR_NONE;
-  }
-
-  // 1. For power transition cases other than Off->On or On->Off, async power mode
-  // will not be used. Hence, set override_mode to false for them.
-  // 2. When SF requests Doze mode transition on panels where Doze mode is not supported
-  // (like video mode), HWComposer.cpp will override the request to "On". Handle such cases
-  // in main thread path.
-  if (!((last_power_mode == HWC2::PowerMode::Off && mode == HWC2::PowerMode::On) ||
-     (last_power_mode == HWC2::PowerMode::On && mode == HWC2::PowerMode::Off)) ||
-     (last_power_mode == HWC2::PowerMode::Off && mode == HWC2::PowerMode::On)) {
-    override_mode = false;
-  }
-
+  bool override_mode = async_powermode_ && display_ready_.test(UINT32(display));
   if (!override_mode) {
     hwc2_display_t active_builtin_disp_id = GetActiveBuiltinDisplay();
     bool needs_validation = false;
     {
       SEQUENCE_WAIT_SCOPE_LOCK(locker_[display]);
-      needs_validation = (hwc_display_[display]->GetCurrentPowerMode() == HWC2::PowerMode::Off &&
-                          mode != HWC2::PowerMode::Off && display != active_builtin_disp_id &&
-                          active_builtin_disp_id < HWCCallbacks::kNumDisplays);
-
+      if (hwc_display_[display]) {
+        needs_validation = (hwc_display_[display]->GetCurrentPowerMode() == HWC2::PowerMode::Off &&
+                            mode != HWC2::PowerMode::Off && display != active_builtin_disp_id &&
+                            active_builtin_disp_id < HWCCallbacks::kNumDisplays);
+      }
     }
     auto error = CallDisplayFunction(display, &HWCDisplay::SetPowerMode, mode,
                                      false /* teardown */);
@@ -1938,6 +1921,8 @@ android::status_t HWCSession::SetFrameDumpConfig(const android::Parcel *input_pa
   uint32_t frame_dump_count = UINT32(input_parcel->readInt32());
   std::bitset<32> bit_mask_display_type = UINT32(input_parcel->readInt32());
   uint32_t bit_mask_layer_type = UINT32(input_parcel->readInt32());
+  int32_t output_format = HAL_PIXEL_FORMAT_RGB_888;
+  bool post_processed = true;
 
   // Output buffer dump is not supported, if External or Virtual display is present.
   bool output_buffer_dump = bit_mask_layer_type & (1 << OUTPUT_LAYER_DUMP);
@@ -1951,38 +1936,14 @@ android::status_t HWCSession::SetFrameDumpConfig(const android::Parcel *input_pa
     }
   }
 
-  // Read optional user preferences: output_format, tap_point, pu_in_cwb_roi, cwb_roi.
-  int32_t output_format = HAL_PIXEL_FORMAT_RGB_888;
-  CwbConfig cwb_config = {};
-
+  // Read optional user preferences: output_format and post_processed.
   if (input_parcel->dataPosition() != input_parcel->dataSize()) {
     // HAL Pixel Format for output buffer
     output_format = input_parcel->readInt32();
   }
-
-  LayerBufferFormat sdm_format = HWCLayer::GetSDMFormat(output_format, 0);
-  if (sdm_format == kFormatInvalid) {
-    DLOGW("Format %d is not supported by SDM", output_format);
-    return -EINVAL;
-  }
-
   if (input_parcel->dataPosition() != input_parcel->dataSize()) {
     // Option to dump Layer Mixer output (0) or DSPP output (1)
-    cwb_config.tap_point = static_cast<CwbTapPoint>(input_parcel->readInt32());
-  }
-
-  LayerRect &cwb_roi = cwb_config.cwb_roi;
-  if (input_parcel->dataPosition() != input_parcel->dataSize()) {
-    cwb_roi.left = static_cast<float>(input_parcel->readInt32());
-  }
-  if (input_parcel->dataPosition() != input_parcel->dataSize()) {
-    cwb_roi.top = static_cast<float>(input_parcel->readInt32());
-  }
-  if (input_parcel->dataPosition() != input_parcel->dataSize()) {
-    cwb_roi.right = static_cast<float>(input_parcel->readInt32());
-  }
-  if (input_parcel->dataPosition() != input_parcel->dataSize()) {
-    cwb_roi.bottom = static_cast<float>(input_parcel->readInt32());
+    post_processed = (input_parcel->readInt32() != 0);
   }
 
   android::status_t status = 0;
@@ -2004,7 +1965,7 @@ android::status_t HWCSession::SetFrameDumpConfig(const android::Parcel *input_pa
     }
 
     HWC2::Error error = hwc_display->SetFrameDumpConfig(frame_dump_count, bit_mask_layer_type,
-                                                        output_format, cwb_config);
+                                                        output_format, post_processed);
     if (error != HWC2::Error::None) {
       status = (HWC2::Error::NoResources == error) ? -ENOMEM : -EINVAL;
     }
@@ -3184,7 +3145,7 @@ void HWCSession::DisplayPowerReset() {
 
   hwc2_display_t vsync_source = callbacks_.GetVsyncSource();
   // adb shell stop sets vsync source as max display
-  if (vsync_source != HWCCallbacks::kNumDisplays && hwc_display_[vsync_source]) {
+  if (vsync_source != HWCCallbacks::kNumDisplays) {
     status = hwc_display_[vsync_source]->SetVsyncEnabled(HWC2::Vsync::Enable);
     if (status != HWC2::Error::None) {
       DLOGE("Enabling vsync failed for disp: %" PRIu64 " with error = %d", vsync_source, status);
@@ -3231,14 +3192,13 @@ void HWCSession::HandleSecureSession() {
        display < HWCCallbacks::kNumRealDisplays; display++) {
     Locker::ScopeLock lock_d(locker_[display]);
     HWCDisplay *hwc_display = hwc_display_[display];
-    if (!hwc_display) {
+    if (!hwc_display || hwc_display->GetDisplayClass() != DISPLAY_CLASS_BUILTIN) {
       continue;
     }
 
     bool is_active_secure_display = false;
     // The first On/Doze/DozeSuspend built-in display is taken as the secure display.
     if (!found_active_secure_display &&
-        hwc_display->GetDisplayClass() == DISPLAY_CLASS_BUILTIN &&
         hwc_display->GetCurrentPowerMode() != HWC2::PowerMode::Off) {
       is_active_secure_display = true;
       found_active_secure_display = true;
@@ -3408,10 +3368,8 @@ int32_t HWCSession::SetReadbackBuffer(hwc2_display_t display, const native_handl
     return HWC2_ERROR_UNSUPPORTED;
   }
 
-  CwbConfig cwb_config = {}; /* SF uses LM tappoint*/
-
   return CallDisplayFunction(display, &HWCDisplay::SetReadbackBuffer, buffer, acquire_fence,
-                             cwb_config, kCWBClientComposer);
+                             false, kCWBClientComposer);
 }
 
 int32_t HWCSession::GetReadbackBufferFence(hwc2_display_t display,
@@ -3501,20 +3459,6 @@ int32_t HWCSession::GetDisplayConnectionType(hwc2_display_t display,
   }
 
   return HWC2_ERROR_NONE;
-}
-
-int32_t HWCSession::GetClientTargetProperty(hwc2_display_t display,
-                                            HwcClientTargetProperty *outClientTargetProperty) {
-  if (!outClientTargetProperty) {
-    return HWC2_ERROR_BAD_PARAMETER;
-  }
-
-  if (display >= HWCCallbacks::kNumDisplays) {
-    return HWC2_ERROR_BAD_DISPLAY;
-  }
-
-  return CallDisplayFunction(display, &HWCDisplay::GetClientTargetProperty,
-                             outClientTargetProperty);
 }
 
 int32_t HWCSession::GetDisplayBrightnessSupport(hwc2_display_t display, bool *outSupport) {

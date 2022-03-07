@@ -36,7 +36,6 @@
 #include <map>
 #include <string>
 #include <memory>
-#include <core/display_interface.h>
 
 #include "hwc_callbacks.h"
 #include "hwc_layers.h"
@@ -62,7 +61,6 @@ namespace composer_V2_3 = ::android::hardware::graphics::composer::V2_3;
 namespace composer_V2_4 = ::android::hardware::graphics::composer::V2_4;
 using HwcDisplayCapability = composer_V2_4::IComposerClient::DisplayCapability;
 using HwcDisplayConnectionType = composer_V2_4::IComposerClient::DisplayConnectionType;
-using HwcClientTargetProperty = composer_V2_4::IComposerClient::ClientTargetProperty;
 
 namespace sdm {
 
@@ -71,9 +69,6 @@ using vendor::qti::hardware::display::composer::V3_0::IQtiComposerClient;
 int32_t GetDataspaceFromColorMode(ColorMode mode);
 
 typedef DisplayConfig::DisplayType DispType;
-#ifdef DISPLAY_CONFIG_CAMERA_SMOOTH_APIs_1_0
-typedef DisplayConfig::CameraSmoothOp CameraSmoothOp;
-#endif
 
 // Create a singleton uevent listener thread valid for life of hardware composer process.
 // This thread blocks on uevents poll inside uevent library implementation. This poll exits
@@ -244,8 +239,6 @@ class HWCSession : hwc2_device_t, HWCUEventListener, public qClient::BnQClient,
   int32_t GetDataspaceSaturationMatrix(int32_t /*Dataspace*/ int_dataspace, float *out_matrix);
   int32_t SetDisplayBrightnessScale(const android::Parcel *input_parcel);
   int32_t GetDisplayConnectionType(hwc2_display_t display, HwcDisplayConnectionType *type);
-  int32_t GetClientTargetProperty(hwc2_display_t display,
-                                  HwcClientTargetProperty *outClientTargetProperty);
 
   // Layer functions
   int32_t SetLayerBuffer(hwc2_display_t display, hwc2_layer_t layer, buffer_handle_t buffer,
@@ -316,17 +309,16 @@ class HWCSession : hwc2_device_t, HWCUEventListener, public qClient::BnQClient,
     explicit CWB(HWCSession *hwc_session) : hwc_session_(hwc_session) { }
     void PresentDisplayDone(hwc2_display_t disp_id);
 
-    int32_t PostBuffer(std::weak_ptr<DisplayConfig::ConfigCallback> callback,
-                       const CwbConfig &cwb_config, const native_handle_t *buffer);
+    int32_t PostBuffer(std::weak_ptr<DisplayConfig::ConfigCallback> callback, bool post_processed,
+                       const native_handle_t *buffer);
 
    private:
     struct QueueNode {
-      QueueNode(std::weak_ptr<DisplayConfig::ConfigCallback> cb, const CwbConfig &cwb_conf,
-                const hidl_handle &buf)
-          : callback(cb), cwb_config(cwb_conf), buffer(buf) {}
+      QueueNode(std::weak_ptr<DisplayConfig::ConfigCallback> cb, bool pp, const hidl_handle& buf)
+        : callback(cb), post_processed(pp), buffer(buf) { }
 
       std::weak_ptr<DisplayConfig::ConfigCallback> callback;
-      CwbConfig cwb_config = {};
+      bool post_processed = false;
       const native_handle_t *buffer;
     };
 
@@ -406,10 +398,7 @@ class HWCSession : hwc2_device_t, HWCUEventListener, public qClient::BnQClient,
     virtual int ControlIdleStatusCallback(bool enable);
     virtual int GetDisplayType(uint64_t physical_disp_id, DispType *disp_type);
     virtual int AllowIdleFallback();
-#ifdef DISPLAY_CONFIG_CAMERA_SMOOTH_APIs_1_0
-    virtual int SetCameraSmoothInfo(CameraSmoothOp op, uint32_t fps);
-    virtual int ControlCameraSmoothCallback(bool enable);
-#endif
+
     std::weak_ptr<DisplayConfig::ConfigCallback> callback_;
     HWCSession *hwc_session_ = nullptr;
   };
@@ -581,11 +570,7 @@ class HWCSession : hwc2_device_t, HWCUEventListener, public qClient::BnQClient,
   CWB cwb_;
   std::weak_ptr<DisplayConfig::ConfigCallback> qsync_callback_;
   std::weak_ptr<DisplayConfig::ConfigCallback> idle_callback_;
-#ifdef DISPLAY_CONFIG_CAMERA_SMOOTH_APIs_1_0
-  std::weak_ptr<DisplayConfig::ConfigCallback> camera_callback_;
-#endif
   bool async_powermode_ = false;
-  bool async_power_mode_triggered_ = false;
   bool async_vds_creation_ = false;
   bool power_state_transition_[HWCCallbacks::kNumDisplays] = {};
   std::bitset<HWCCallbacks::kNumDisplays> display_ready_;

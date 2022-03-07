@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
+* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -94,18 +94,15 @@ static void PopulateSecurityLevels(drmModePropertyRes *prop) {
   }
 }
 
-static void PopulateCWbCaptureModes(drmModePropertyRes *prop,
-                                    std::vector<DRMCWbCaptureMode> *tap_points) {
+static void PopulateCWbCaptureModes(drmModePropertyRes *prop) {
   static bool capture_modes_populated = false;
   if (!capture_modes_populated) {
     for (auto i = 0; i < prop->count_enums; i++) {
       string enum_name(prop->enums[i].name);
       if (enum_name == "capture_mixer_out") {
         CAPTURE_MIXER_OUT = prop->enums[i].value;
-        tap_points->push_back(DRMCWbCaptureMode::MIXER_OUT);
       } else if (enum_name == "capture_pp_out") {
         CAPTURE_DSPP_OUT = prop->enums[i].value;
-        tap_points->push_back(DRMCWbCaptureMode::DSPP_OUT);
       }
     }
     capture_modes_populated = true;
@@ -340,7 +337,7 @@ void DRMCrtc::ParseProperties() {
 
     if (prop_enum == DRMProperty::CAPTURE_MODE) {
       crtc_info_.concurrent_writeback = true;
-      PopulateCWbCaptureModes(info, &crtc_info_.tap_points);
+      PopulateCWbCaptureModes(info);
     }
 
     if (prop_enum == DRMProperty::IDLE_PC_STATE) {

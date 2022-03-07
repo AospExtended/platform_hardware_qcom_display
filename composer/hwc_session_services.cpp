@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+* Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -527,29 +527,6 @@ int HWCSession::DisplayConfigImpl::SetCameraLaunchStatus(uint32_t on) {
   return hwc_session_->SetCameraLaunchStatus(on);
 }
 
-#ifdef DISPLAY_CONFIG_CAMERA_SMOOTH_APIs_1_0
-int HWCSession::DisplayConfigImpl::SetCameraSmoothInfo(CameraSmoothOp op, uint32_t fps) {
-  std::shared_ptr<DisplayConfig::ConfigCallback> callback = hwc_session_->camera_callback_.lock();
-  if (!callback) {
-    return -EAGAIN;
-  }
-
-  callback->NotifyCameraSmoothInfo(op, fps);
-
-  return 0;
-}
-
-int HWCSession::DisplayConfigImpl::ControlCameraSmoothCallback(bool enable) {
-  if (enable) {
-    hwc_session_->camera_callback_ = callback_;
-  } else {
-    hwc_session_->camera_callback_.reset();
-  }
-
-  return 0;
-}
-#endif
-
 int HWCSession::DisplayBWTransactionPending(bool *status) {
   SEQUENCE_WAIT_SCOPE_LOCK(locker_[HWC_DISPLAY_PRIMARY]);
 
@@ -733,15 +710,12 @@ int HWCSession::DisplayConfigImpl::SetPowerMode(uint32_t disp_id,
   if (!supported) {
     return 0;
   }
-  // Added this flag for pixel
-  hwc_session_->async_power_mode_triggered_  = true;
+
   // Active builtin display needs revalidation
   hwc2_display_t active_builtin_disp_id = hwc_session_->GetActiveBuiltinDisplay();
   HWC2::PowerMode previous_mode = hwc_session_->hwc_display_[disp_id]->GetCurrentPowerMode();
 
   DLOGI("disp_id: %d power_mode: %d", disp_id, power_mode);
-  auto mode = static_cast<HWC2::PowerMode>(power_mode);
-
   HWCDisplay::HWCLayerStack stack = {};
   hwc2_display_t dummy_disp_id = hwc_session_->map_hwc_display_.at(disp_id);
 
@@ -758,25 +732,6 @@ int HWCSession::DisplayConfigImpl::SetPowerMode(uint32_t disp_id,
   hwc_session_->hwc_display_[dummy_disp_id]->UpdatePowerMode(
                                        hwc_session_->hwc_display_[disp_id]->GetCurrentPowerMode());
 
-  buffer_handle_t target = 0;
-  shared_ptr<Fence> acquire_fence = nullptr;
-  int32_t dataspace = 0;
-  hwc_region_t damage = {};
-  hwc_session_->hwc_display_[disp_id]->GetClientTarget(
-                                 target, acquire_fence, dataspace, damage);
-  hwc_session_->hwc_display_[dummy_disp_id]->SetClientTarget(
-                                       target, acquire_fence, dataspace, damage);
-
-  // Initialize the variable config map of dummy display using map of real display.
-  // Pass the real display's last active config index to dummy display.
-  std::map<uint32_t, DisplayConfigVariableInfo> variable_config_map;
-  int active_config_index = -1;
-  uint32_t num_configs = 0;
-  hwc_session_->hwc_display_[disp_id]->GetConfigInfo(&variable_config_map, &active_config_index,
-                                                     &num_configs);
-  hwc_session_->hwc_display_[dummy_disp_id]->SetConfigInfo(variable_config_map,
-                                                           active_config_index, num_configs);
-
   hwc_session_->locker_[dummy_disp_id].Unlock();  // Release the dummy display.
   // Release the display's power-state transition var read lock.
   hwc_session_->power_state_[disp_id].Unlock();
@@ -785,7 +740,8 @@ int HWCSession::DisplayConfigImpl::SetPowerMode(uint32_t disp_id,
   // those operations on the dummy display.
 
   // Perform the actual [synchronous] power-state change.
-  hwc_session_->hwc_display_[disp_id]->SetPowerMode(mode, false /* teardown */);
+  hwc_session_->hwc_display_[disp_id]->SetPowerMode(static_cast<HWC2::PowerMode>(power_mode),
+                                                    false /* teardown */);
 
   // Power state transition end.
   // Acquire the display's power-state transition var read lock.
@@ -796,15 +752,6 @@ int HWCSession::DisplayConfigImpl::SetPowerMode(uint32_t disp_id,
   // Retrieve the real display's layer-stack from the dummy display.
   hwc_session_->hwc_display_[dummy_disp_id]->GetLayerStack(&stack);
   hwc_session_->hwc_display_[disp_id]->SetLayerStack(&stack);
-  bool vsync_pending = hwc_session_->hwc_display_[dummy_disp_id]->VsyncEnablePending();
-  if (vsync_pending) {
-    hwc_session_->hwc_display_[disp_id]->SetVsyncEnabled(HWC2::Vsync::Enable);
-  }
-  hwc_session_->hwc_display_[dummy_disp_id]->GetClientTarget(
-                                       target, acquire_fence, dataspace, damage);
-  hwc_session_->hwc_display_[disp_id]->SetClientTarget(
-                                 target, acquire_fence, dataspace, damage);
-
   // Read display has got layerstack. Update the fences.
   hwc_session_->hwc_display_[disp_id]->PostPowerMode();
 
@@ -1006,6 +953,11 @@ int HWCSession::DisplayConfigImpl::SetCWBOutputBuffer(uint32_t disp_id,
     return -1;
   }
 
+  if (rect.left || rect.top || rect.right || rect.bottom) {
+    DLOGE("Cropping rectangle is not supported.");
+    return -1;
+  }
+
   // Output buffer dump is not supported, if External or Virtual display is present.
   int external_dpy_index = hwc_session_->GetDisplayIndex(qdutils::DISPLAY_EXTERNAL);
   int virtual_dpy_index = hwc_session_->GetDisplayIndex(qdutils::DISPLAY_VIRTUAL);
@@ -1026,22 +978,12 @@ int HWCSession::DisplayConfigImpl::SetCWBOutputBuffer(uint32_t disp_id,
     }
   }
 
-  CwbConfig cwb_config = {};
-  cwb_config.tap_point = static_cast<CwbTapPoint>(post_processed);
-  LayerRect &roi = cwb_config.cwb_roi;
-  roi.left = FLOAT(rect.left);
-  roi.top = FLOAT(rect.top);
-  roi.right = FLOAT(rect.right);
-  roi.bottom = FLOAT(rect.bottom);
-
-  DLOGI("CWB config passed by cwb_client : tappoint %d  CWB_ROI : (%f %f %f %f)",
-        cwb_config.tap_point, roi.left, roi.top, roi.right, roi.bottom);
-
-  return hwc_session_->cwb_.PostBuffer(callback_, cwb_config, native_handle_clone(buffer));
+  return hwc_session_->cwb_.PostBuffer(callback_, post_processed,
+                                       native_handle_clone(buffer));
 }
 
 int32_t HWCSession::CWB::PostBuffer(std::weak_ptr<DisplayConfig::ConfigCallback> callback,
-                                    const CwbConfig &cwb_config, const native_handle_t *buffer) {
+                                    bool post_processed, const native_handle_t *buffer) {
   SCOPE_LOCK(queue_lock_);
 
   // Ensure that async task runs only until all queued CWB requests have been fulfilled.
@@ -1050,7 +992,7 @@ int32_t HWCSession::CWB::PostBuffer(std::weak_ptr<DisplayConfig::ConfigCallback>
   // currently running async task will automatically desolve without processing more requests.
   bool post_future = !queue_.size();
 
-  QueueNode *node = new QueueNode(callback, cwb_config, buffer);
+  QueueNode *node = new QueueNode(callback, post_processed, buffer);
   queue_.push(node);
 
   if (post_future) {
@@ -1093,10 +1035,8 @@ void HWCSession::CWB::ProcessRequests() {
     // Wait for previous commit to finish before configuring next buffer.
     {
       SEQUENCE_WAIT_SCOPE_LOCK(locker);
-
-      HWC2::Error error = hwc_display->SetReadbackBuffer(node->buffer, nullptr, node->cwb_config,
-                                                         kCWBClientExternal);
-      if (error != HWC2::Error::None) {
+      if (hwc_display->SetReadbackBuffer(node->buffer, nullptr, node->post_processed,
+                                         kCWBClientExternal) != HWC2::Error::None) {
         DLOGE("CWB buffer could not be set.");
         status = -1;
       } else {
@@ -1107,12 +1047,8 @@ void HWCSession::CWB::ProcessRequests() {
     if (!status) {
       hwc_session_->callbacks_.Refresh(HWC_DISPLAY_PRIMARY);
 
-      // Mutex scope
-      // Wait for the signal from commit thread to retrieve the CWB release fence
-      {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock);
-      }
+      std::unique_lock<std::mutex> lock(mutex_);
+      cv_.wait(lock);
 
       shared_ptr<Fence> release_fence = nullptr;
       // Mutex scope

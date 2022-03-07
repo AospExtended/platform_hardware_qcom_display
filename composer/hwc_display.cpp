@@ -53,6 +53,7 @@
 namespace sdm {
 
 uint32_t HWCDisplay::throttling_refresh_rate_ = 60;
+constexpr uint32_t kVsyncTimeDriftNs = 1000000;
 
 bool NeedsToneMap(const LayerStack &layer_stack) {
   for (Layer *layer : layer_stack.layers) {
@@ -64,7 +65,7 @@ bool NeedsToneMap(const LayerStack &layer_stack) {
 }
 
 bool IsTimeAfterOrEqualVsyncTime(int64_t time, int64_t vsync_time) {
-  return ((vsync_time != INT64_MAX) && ((time - vsync_time) >= 0));
+  return ((vsync_time != INT64_MAX) && ((time - (vsync_time - kVsyncTimeDriftNs)) >= 0));
 }
 
 HWCColorMode::HWCColorMode(DisplayInterface *display_intf) : display_intf_(display_intf) {}
@@ -824,6 +825,14 @@ void HWCDisplay::BuildLayerStack() {
   int32_t client_target_dataspace = GetDataspaceFromColorMode(GetCurrentColorMode());
   SetClientTargetDataSpace(client_target_dataspace);
   layer_stack_.layers.push_back(sdm_client_target);
+
+  // fall back frame composition to GPU when client target is 10bit
+  // TODO(user): clarify the behaviour from Client(SF) and SDM Extn -
+  // when handling 10bit FBT, as it would affect blending
+  if (Is10BitFormat(sdm_client_target->input_buffer.format)) {
+    // Must fall back to client composition
+    MarkLayersForClientComposition();
+  }
 }
 
 void HWCDisplay::BuildSolidFillStack() {
@@ -1211,21 +1220,13 @@ HWC2::Error HWCDisplay::SetClientTarget(buffer_handle_t target, shared_ptr<Fence
   Layer *sdm_layer = client_target_->GetSDMLayer();
   sdm_layer->frame_rate = std::min(current_refresh_rate_, HWCDisplay::GetThrottlingRefreshRate());
   client_target_->SetLayerSurfaceDamage(damage);
+  int translated_dataspace = TranslateFromLegacyDataspace(dataspace);
+  if (client_target_->GetLayerDataspace() != translated_dataspace) {
+    DLOGW("New Dataspace = %d not matching Dataspace from color mode = %d",
+           translated_dataspace, client_target_->GetLayerDataspace());
+    return HWC2::Error::BadParameter;
+  }
   client_target_->SetLayerBuffer(target, acquire_fence);
-  client_target_handle_ = target;
-  client_acquire_fence_ = acquire_fence;
-  client_dataspace_     = dataspace;
-  client_damage_region_ = damage;
-
-  return HWC2::Error::None;
-}
-
-HWC2::Error HWCDisplay::GetClientTarget(buffer_handle_t target, shared_ptr<Fence> acquire_fence,
-                                        int32_t dataspace, hwc_region_t damage) {
-  target        = client_target_handle_;
-  acquire_fence = client_acquire_fence_;
-  dataspace     = client_dataspace_;
-  damage        = client_damage_region_;
 
   return HWC2::Error::None;
 }
@@ -1280,7 +1281,7 @@ DisplayError HWCDisplay::SetMixerResolution(uint32_t width, uint32_t height) {
 }
 
 HWC2::Error HWCDisplay::SetFrameDumpConfig(uint32_t count, uint32_t bit_mask_layer_type,
-                                           int32_t format, const CwbConfig &cwb_config) {
+                                           int32_t format, bool post_processed) {
   dump_frame_count_ = count;
   dump_frame_index_ = 0;
   dump_input_layers_ = ((bit_mask_layer_type & (1 << INPUT_LAYER_DUMP)) != 0);
@@ -2941,19 +2942,6 @@ DisplayError HWCDisplay::HandleSecureEvent(SecureEvent secure_event, bool *needs
   return kErrorNone;
 }
 
-int HWCDisplay::GetCwbBufferResolution(CwbTapPoint cwb_tappoint, uint32_t *x_pixels,
-                                       uint32_t *y_pixels) {
-  if (!x_pixels || !y_pixels) {
-    return -1;
-  }
-  DisplayError ret = display_intf_->GetCwbBufferResolution(cwb_tappoint, x_pixels, y_pixels);
-  if (ret != kErrorNone) {
-    DLOGE("Failed to get Output buffer resolution.");
-    return -1;
-  }
-  return 0;
-}
-
 DisplayError HWCDisplay::TeardownConcurrentWriteback(bool *needs_refresh) {
   if (!needs_refresh) {
     return kErrorParameters;
@@ -2962,41 +2950,4 @@ DisplayError HWCDisplay::TeardownConcurrentWriteback(bool *needs_refresh) {
   return kErrorNone;
 }
 
-HWC2::Error HWCDisplay::GetClientTargetProperty(ClientTargetProperty *out_client_target_property) {
-
-  Layer *client_layer = client_target_->GetSDMLayer();
-  if (!client_layer->request.flags.update_format) {
-    return HWC2::Error::None;
-  }
-  int32_t format = 0;
-  uint64_t flags = 0;
-  auto err = buffer_allocator_->SetBufferInfo(client_layer->request.format, &format,
-                                              &flags);
-  if (err) {
-    DLOGE("Invalid format: %s requested", GetFormatString(client_layer->request.format));
-    return HWC2::Error::BadParameter;
-  }
-  Dataspace dataspace;
-  DisplayError error = ColorMetadataToDataspace(client_layer->request.color_metadata,
-                                                   &dataspace);
-  if (error != kErrorNone) {
-    DLOGE("Invalid Dataspace requested: Primaries = %d Transfer = %d ds = %d",
-          client_layer->request.color_metadata.colorPrimaries,
-          client_layer->request.color_metadata.transfer, dataspace);
-    return HWC2::Error::BadParameter;
-  }
-  out_client_target_property->dataspace = dataspace;
-  out_client_target_property->pixelFormat =
-      (android::hardware::graphics::common::V1_2::PixelFormat)format;
-
-  return HWC2::Error::None;
-}
-
-void HWCDisplay::GetConfigInfo(std::map<uint32_t, DisplayConfigVariableInfo> *variable_config_map,
-                               int *active_config_index, uint32_t *num_configs) {
-  *variable_config_map = variable_config_map_;
-  *active_config_index = active_config_index_;
-  *num_configs = num_configs_;
-}
-
-} //namespace sdm
+}  // namespace sdm

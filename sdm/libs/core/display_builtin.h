@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2014 - 2021, The Linux Foundation. All rights reserved.
+* Copyright (c) 2014 - 2020, The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without modification, are permitted
 * provided that the following conditions are met:
@@ -149,6 +149,7 @@ class DisplayBuiltIn : public DisplayBase, HWEventHandler, DppsPropIntf {
   DisplayError VSync(int64_t timestamp) override;
   DisplayError Blank(bool blank) override { return kErrorNone; }
   void IdleTimeout() override;
+  void ThermalEvent(int64_t thermal_level) override;
   void CECMessage(char *message) override {}
   void IdlePowerCollapse() override;
   void PingPongTimeout() override;
@@ -160,6 +161,7 @@ class DisplayBuiltIn : public DisplayBase, HWEventHandler, DppsPropIntf {
 
   // Implement the DppsPropIntf
   DisplayError DppsProcessOps(enum DppsOps op, void *payload, size_t size) override;
+  void ResetPanel();
   DisplayError SetActiveConfig(uint32_t index) override;
   DisplayError ReconfigureDisplay() override;
   DisplayError CreatePanelfeatures();
